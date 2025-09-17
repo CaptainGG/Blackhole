@@ -1,0 +1,219 @@
+#version 430
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) writeonly uniform image2D outImage;
+
+// ---- Camera (matches C++)
+layout(std140, binding = 1) uniform Camera {
+    vec3 camPos;     float _p0;
+    vec3 camRight;   float _p1;
+    vec3 camUp;      float _p2;
+    vec3 camForward; float _p3;
+    float tanHalfFov;
+    float aspect;
+    int   moving;    int _p4;
+} cam;
+
+// ---- Disk (matches C++)
+layout(std140, binding = 2) uniform Disk {
+    float disk_r1;
+    float disk_r2;
+    float disk_num;
+    float thickness;
+};
+
+// ---- Objects (matches C++; masses are vec4, use .x)
+layout(std140, binding = 3) uniform Objects {
+    int   numObjects; vec3 _pad;
+    vec4  objPosRadius[16];
+    vec4  objColor[16];
+    vec4  mass[16];
+};
+
+// Animation time from C++
+uniform float uTime;
+
+// ====== constants / params ======
+const float SagA_rs   = 1.269e10;
+const float D_LAMBDA  = 1e7;
+const double ESCAPE_R = 1e30;
+
+// ====== starfield (denser + twinkle) ======
+uint hash(uvec3 x){ x^=(x>>16U); x*=0x7feb352dU; x^=(x>>15U); x*=0x846ca68bU; x^=(x>>16U); return x.x^x.y^x.z; }
+float hash1(vec3 p){ return float(hash(floatBitsToUint(p))) / 4294967295.0; }
+
+vec3 starfield(vec3 dir)
+{
+    dir = normalize(dir);
+    // three overlapping grids for richness
+    vec3 col = vec3(0.0);
+    for (int layer = 0; layer < 3; ++layer) {
+        float g = 36.0 + 12.0 * float(layer); // 36, 48, 60
+        vec2 sph = vec2(atan(dir.z, dir.x), acos(clamp(dir.y, -1.0, 1.0)));
+        vec2 cell = floor(sph * vec2(g, g*0.5));
+        float n = hash1(vec3(cell, 11.0 + 7.0*layer));
+        if (n < 0.03) { // ~3% cells have stars per layer
+            vec2 f = fract(sph * vec2(g, g*0.5)) - 0.5;
+            float d = length(f);
+            float size = mix(0.0010, 0.0032, hash1(vec3(cell, 5.0+layer)));
+            float tw = 0.8 + 0.2 * sin(uTime * (2.0 + 0.7*layer) + n * 20.0);
+            float I = exp(-d*d/(size*size)) * mix(0.7,1.5,hash1(vec3(cell,3.0+layer))) * tw;
+            vec3 tint = mix(vec3(0.85,0.9,1.0), vec3(1.0,0.95,0.8), hash1(vec3(cell, 9.0+layer)));
+            col += tint * I;
+        }
+    }
+    return col;
+}
+
+// ====== your geodesic structs & funcs (unchanged) ======
+struct Ray { float x,y,z,r,theta,phi; float dr,dtheta,dphi; float E,L; };
+
+Ray initRay(vec3 pos, vec3 dir){
+    Ray ray; ray.x=pos.x; ray.y=pos.y; ray.z=pos.z;
+    ray.r=length(pos); ray.theta=acos(pos.z/ray.r); ray.phi=atan(pos.y,pos.x);
+    float dx=dir.x, dy=dir.y, dz=dir.z;
+    ray.dr     = sin(ray.theta)*cos(ray.phi)*dx + sin(ray.theta)*sin(ray.phi)*dy + cos(ray.theta)*dz;
+    ray.dtheta = (cos(ray.theta)*cos(ray.phi)*dx + cos(ray.theta)*sin(ray.phi)*dy - sin(ray.theta)*dz) / ray.r;
+    ray.dphi   = (-sin(ray.phi)*dx + cos(ray.phi)*dy) / (ray.r * sin(ray.theta));
+    ray.L = ray.r * ray.r * sin(ray.theta) * ray.dphi;
+    float f = 1.0 - SagA_rs / ray.r;
+    float dt_dL = sqrt((ray.dr*ray.dr)/f + ray.r*ray.r*(ray.dtheta*ray.dtheta + sin(ray.theta)*sin(ray.theta)*ray.dphi*ray.dphi));
+    ray.E = f * dt_dL;
+    return ray;
+}
+bool intercept(Ray ray, float rs){ return ray.r <= rs; }
+
+vec4  objectColor=vec4(0); vec3 hitCenter=vec3(0); float hitRadius=0.0;
+bool interceptObject(Ray ray){
+    vec3 P = vec3(ray.x, ray.y, ray.z);
+    for (int i=0;i<numObjects;++i){
+        vec3 C = objPosRadius[i].xyz; float R = objPosRadius[i].w;
+        if (distance(P,C) <= R){ objectColor=objColor[i]; hitCenter=C; hitRadius=R; return true; }
+    }
+    return false;
+}
+void geodesicRHS(Ray ray, out vec3 d1, out vec3 d2){
+    float r=ray.r, th=ray.theta, dr=ray.dr, dth=ray.dtheta, dph=ray.dphi;
+    float f = 1.0 - SagA_rs / r;
+    float dt_dL = ray.E / f;
+    d1 = vec3(dr, dth, dph);
+    d2.x = - (SagA_rs / (2.0 * r*r)) * f * dt_dL * dt_dL
+         + (SagA_rs / (2.0 * r*r * f)) * dr * dr
+         + r * (dth*dth + sin(th)*sin(th)*dph*dph);
+    d2.y = -2.0*dr*dth/r + sin(th)*cos(th)*dph*dph;
+    d2.z = -2.0*dr*dph/r - 2.0*cos(th)/(sin(th)) * dth * dph;
+}
+void rk4Step(inout Ray ray, float dL){
+    vec3 k1a,k1b; geodesicRHS(ray,k1a,k1b);
+    ray.r      += dL*k1a.x; ray.theta  += dL*k1a.y; ray.phi    += dL*k1a.z;
+    ray.dr     += dL*k1b.x; ray.dtheta += dL*k1b.y; ray.dphi   += dL*k1b.z;
+    ray.x = ray.r * sin(ray.theta) * cos(ray.phi);
+    ray.y = ray.r * sin(ray.theta) * sin(ray.phi);
+    ray.z = ray.r * cos(ray.theta);
+}
+bool crossesEquatorialPlane(vec3 oldPos, vec3 newPos){
+    bool crossed = (oldPos.y * newPos.y < 0.0);
+    float r = length(vec2(newPos.x, newPos.z));
+    return crossed && (r >= disk_r1 && r <= disk_r2);
+}
+
+// ====== disk look helpers (unchanged from previous nicer version) ======
+vec3 heatRamp(float t){
+    t = clamp(t, 0.0, 1.0);
+    vec3 c1=vec3(0.95,0.35,0.07), c2=vec3(1.0,0.85,0.25), c3=vec3(1.0);
+    vec3 a = mix(c1,c2,smoothstep(0.0,0.7,t));
+    return mix(a,c3,smoothstep(0.6,1.0,t));
+}
+float gravRedshift(float r, float rs){ return sqrt(clamp(1.0 - (rs/max(r, rs+1e-6)), 0.0, 1.0)); }
+float dopplerFactor(float beta, float mu){
+    float num=max(1e-6,1.0+beta*mu), den=max(1e-6,1.0-beta*mu); return sqrt(num/den);
+}
+float keplerBeta(float M, float r){ float v = sqrt(max(0.0,M/max(r,1.0))); return clamp(v*1e-19,0.0,0.6); }
+
+void main()
+{
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz  = imageSize(outImage);
+    if (pix.x >= sz.x || pix.y >= sz.y) return;
+
+    // primary ray
+    float u = (2.0*(pix.x+0.5)/float(sz.x)-1.0) * cam.aspect * cam.tanHalfFov;
+    float v = (1.0-2.0*(pix.y+0.5)/float(sz.y)) * cam.tanHalfFov;
+    vec3 dir = normalize(u*cam.camRight - v*cam.camUp + cam.camForward);
+
+    Ray ray = initRay(cam.camPos, dir);
+
+    vec3 prevPos = vec3(ray.x, ray.y, ray.z);
+    float rmin = 1e38;        // track closest approach for lensing boost
+    bool hitBH=false, hitDisk=false, hitObj=false;
+
+    const int steps = 60000;
+    for (int i=0;i<steps;++i){
+        if (intercept(ray, SagA_rs)) { hitBH = true; break; }
+        rk4Step(ray, D_LAMBDA);
+        rmin = min(rmin, ray.r);
+
+        vec3 newPos = vec3(ray.x, ray.y, ray.z);
+       if (interceptObject(ray))                    { hitObj = true; break; }
+		if (crossesEquatorialPlane(prevPos, newPos)) { hitDisk = true; break; }
+
+        prevPos = newPos;
+
+        if (ray.r > ESCAPE_R) break;
+    }
+
+    vec3 color = vec3(0.0);
+
+    if (hitDisk){
+        vec3  P   = vec3(ray.x, ray.y, ray.z);
+        float rxy = length(P.xz);
+        float pwr = 2.3;
+        float I = pow(clamp(disk_r2 / max(rxy,1.0), 0.0, 10.0), pwr);
+        float tcol = clamp((rxy - disk_r1) / max(disk_r2 - disk_r1, 1.0), 0.0, 1.0);
+        vec3  baseCol = heatRamp(1.0 - tcol);
+
+        float phi   = atan(P.z, P.x);
+        float omega = 0.35;
+        float swirl = 0.5 + 0.5 * sin(6.0 * (phi + omega * uTime));
+        I *= mix(0.85, 1.15, swirl);
+
+        float Mmax = 0.0; for (int i=0;i<numObjects;++i) Mmax = max(Mmax, mass[i].x);
+        float beta = keplerBeta(Mmax, max(rxy,1.0));
+        vec3  tang = normalize(vec3(-sin(phi + omega*uTime), 0.0, cos(phi + omega*uTime)));
+        float mu   = dot(tang, -dir);
+        float beaming = pow(dopplerFactor(beta, mu), 3.0);
+        float gshift  = gravRedshift(rxy, SagA_rs);
+
+        float edgeIn  = smoothstep(disk_r1,               disk_r1 + 0.02*disk_r2, rxy);
+        float edgeOut = 1.0 - smoothstep(disk_r2-0.02*disk_r2, disk_r2,           rxy);
+        float edge    = edgeIn * edgeOut;
+
+        color = baseCol * I * beaming * gshift * edge;
+
+    } else if (hitBH){
+        color = vec3(0.0);
+
+    } else if (hitObj){
+        vec3 P = vec3(ray.x, ray.y, ray.z);
+        vec3 N = normalize(P - hitCenter);
+        vec3 V = normalize(cam.camPos - P);
+        float ambient = 0.1;
+        float diff = max(dot(N,V), 0.0);
+        color = objectColor.rgb * (ambient + (1.0-ambient)*diff);
+
+    } else {
+        // Escaped to "infinity" → use asymptotic direction based on final position.
+        vec3 dirInf = normalize(vec3(ray.x, ray.y, ray.z));
+        vec3 stars  = starfield(dirInf);
+
+        // Lensing magnification near photon sphere (~1.5 r_s)
+        float sigma = 0.30; // width in units of r_s
+        float x = (rmin / SagA_rs) - 1.5;     // 0 near photon sphere
+        float boost = exp(- (x*x) / (sigma*sigma)) * 3.0; // up to ~3x brighter
+        color = stars * (1.0 + boost);
+    }
+
+    // Gentle tone map
+    color = color / (color + 1.0);
+    imageStore(outImage, pix, vec4(color, 1.0));
+}
