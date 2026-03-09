@@ -202,7 +202,7 @@ void main()
         color = objectColor.rgb * (ambient + (1.0-ambient)*diff);
 
     } else {
-        // Escaped to "infinity" → use asymptotic direction based on final position.
+        // Escaped to "infinity" ? use asymptotic direction based on final position.
         vec3 dirInf = normalize(vec3(ray.x, ray.y, ray.z));
         vec3 stars  = starfield(dirInf);
 

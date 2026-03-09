@@ -17,6 +17,9 @@
 #include <sstream>
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <string>
+#include <windows.h>
 
 // =================== AUDIO (miniaudio) ===================
 // Download miniaudio.h from https://miniaud.io and place beside this file.
@@ -29,6 +32,69 @@
 
 using namespace glm;
 using namespace std;
+
+namespace fs = std::filesystem;
+
+#ifndef BLACKHOLE_SOURCE_DIR
+#define BLACKHOLE_SOURCE_DIR "."
+#endif
+
+[[noreturn]] void failStartup(const std::string& message) {
+    std::cerr << message << "\n";
+    MessageBoxA(nullptr, message.c_str(), "Black Hole startup error", MB_OK | MB_ICONERROR);
+    std::exit(EXIT_FAILURE);
+}
+
+fs::path executableDir() {
+    char buffer[MAX_PATH] = {};
+    DWORD length = GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    if (length == 0 || length == MAX_PATH) {
+        return fs::current_path();
+    }
+    return fs::path(buffer).parent_path();
+}
+
+fs::path resolveAssetPath(const char* filename) {
+    const fs::path name(filename);
+    const fs::path cwd = fs::current_path();
+    const fs::path exe = executableDir();
+    const fs::path source = fs::path(BLACKHOLE_SOURCE_DIR);
+
+    const fs::path candidates[] = {
+        cwd / name,
+        exe / name,
+        exe.parent_path() / name,
+        exe.parent_path().parent_path() / name,
+        source / name
+    };
+
+    for (const auto& candidate : candidates) {
+        if (!candidate.empty() && fs::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    failStartup(
+        std::string("Missing required asset: ") + filename +
+        "\n\nSearched in:\n- " + (cwd / name).string() +
+        "\n- " + (exe / name).string() +
+        "\n- " + (exe.parent_path() / name).string() +
+        "\n- " + (exe.parent_path().parent_path() / name).string() +
+        "\n- " + (source / name).string()
+    );
+}
+
+std::string loadTextFileOrFail(const char* filename) {
+    const fs::path resolved = resolveAssetPath(filename);
+    std::ifstream in(resolved, std::ios::binary);
+    if (!in.is_open()) {
+        failStartup(std::string("Unable to open asset: ") + resolved.string());
+    }
+
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
 
 // =================== Globals / constants ===================
 double c = 299792458.0;
@@ -202,17 +268,22 @@ struct Engine {
     int lastComputeW = 0, lastComputeH = 0;
 
     Engine() {
-        if (!glfwInit()) { std::cerr << "GLFW init failed\n"; exit(EXIT_FAILURE); }
+        if (!glfwInit()) { failStartup("GLFW init failed. Make sure your graphics driver and OpenGL runtime are available."); }
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         window = glfwCreateWindow(WIDTH, HEIGHT, "Black Hole", nullptr, nullptr);
-        if (!window) { std::cerr << "Window creation failed\n"; glfwTerminate(); exit(EXIT_FAILURE); }
+        if (!window) { glfwTerminate(); failStartup("Window creation failed. Black Hole requires an OpenGL 4.3 capable GPU."); }
         glfwMakeContextCurrent(window);
+        glfwGetFramebufferSize(window, &WIDTH, &HEIGHT);
+        glViewport(0, 0, WIDTH, HEIGHT);
 
         glewExperimental = GL_TRUE;
-        if (glewInit() != GLEW_OK) { std::cerr << "GLEW init failed\n"; exit(EXIT_FAILURE); }
+        if (glewInit() != GLEW_OK) { failStartup("GLEW initialization failed."); }
         std::cout << "OpenGL " << glGetString(GL_VERSION) << "\n";
+        if (!glewIsSupported("GL_VERSION_4_3")) {
+            failStartup("OpenGL 4.3 is required for Black Hole because it uses compute shaders. Update your GPU driver or run it on a newer GPU.");
+        }
 
         shaderProgram     = CreateShaderProgram();
         gridShaderProgram = CreateShaderProgram("grid.vert", "grid.frag");
@@ -313,9 +384,9 @@ void generateGrid(const vector<ObjectData>& objs) {
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glLineWidth(1.5f); // some drivers clamp to 1.0, but it helps where supported
         glDrawElements(GL_LINES, gridIndexCount, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
-		glLineWidth(1.5f); // some drivers clamp to 1.0, but it helps where supported
         glEnable(GL_DEPTH_TEST);
     }
 
@@ -352,7 +423,7 @@ void generateGrid(const vector<ObjectData>& objs) {
         return {VAO, tex};
     }
 
-    void drawFullScreenQuad() {
+        void drawFullScreenQuad() {
         glUseProgram(shaderProgram);
         glBindVertexArray(quadVAO);
         glActiveTexture(GL_TEXTURE0);
@@ -372,7 +443,7 @@ void generateGrid(const vector<ObjectData>& objs) {
             out vec2 uv;
             void main(){ gl_Position=vec4(aPos,0,1); uv=aTex; }
         )";
-        const char* fs = R"(
+                const char* fs = R"(
             #version 330 core
             in vec2 uv;
             out vec4 FragColor;
@@ -391,14 +462,13 @@ void generateGrid(const vector<ObjectData>& objs) {
 
     GLuint CreateShaderProgram(const char* vertPath, const char* fragPath) {
         auto load = [](const char* path, GLenum type){
-            std::ifstream in(path);
-            if(!in.is_open()){ std::cerr<<"Failed to open "<<path<<"\n"; exit(EXIT_FAILURE); }
-            std::stringstream ss; ss<<in.rdbuf(); std::string s=ss.str(); const char* src=s.c_str();
+            std::string s = loadTextFileOrFail(path);
+        const char* src = s.c_str();
             GLuint sh = glCreateShader(type);
             glShaderSource(sh,1,&src,nullptr); glCompileShader(sh);
             GLint ok; glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
             if(!ok){ GLint n; glGetShaderiv(sh, GL_INFO_LOG_LENGTH,&n); std::vector<char> log(n);
-                glGetShaderInfoLog(sh,n,nullptr,log.data()); std::cerr<<"Compile "<<path<<":\n"<<log.data(); exit(EXIT_FAILURE); }
+                glGetShaderInfoLog(sh,n,nullptr,log.data()); failStartup(std::string("Shader compile failed for ") + path + "\n\n" + log.data()); }
             return sh;
         };
         GLuint vs = load(vertPath, GL_VERTEX_SHADER);
@@ -407,33 +477,32 @@ void generateGrid(const vector<ObjectData>& objs) {
         glAttachShader(p,vs); glAttachShader(p,fs); glLinkProgram(p);
         GLint ok; glGetProgramiv(p, GL_LINK_STATUS, &ok);
         if(!ok){ GLint n; glGetProgramiv(p, GL_INFO_LOG_LENGTH,&n); std::vector<char> log(n);
-            glGetProgramInfoLog(p,n,nullptr,log.data()); std::cerr<<"Link error:\n"<<log.data(); exit(EXIT_FAILURE); }
+            glGetProgramInfoLog(p,n,nullptr,log.data()); failStartup(std::string("Shader link failed\n\n") + log.data()); }
         glDeleteShader(vs); glDeleteShader(fs);
         return p;
     }
 
     GLuint CreateComputeProgram(const char* path) {
-        std::ifstream in(path);
-        if(!in.is_open()){ std::cerr<<"Failed to open "<<path<<"\n"; exit(EXIT_FAILURE); }
-        std::stringstream ss; ss<<in.rdbuf(); std::string s=ss.str(); const char* src=s.c_str();
+        std::string s = loadTextFileOrFail(path);
+        const char* src = s.c_str();
         GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
         glShaderSource(cs,1,&src,nullptr); glCompileShader(cs);
         GLint ok; glGetShaderiv(cs, GL_COMPILE_STATUS, &ok);
         if(!ok){ GLint n; glGetShaderiv(cs, GL_INFO_LOG_LENGTH,&n); std::vector<char> log(n);
-            glGetShaderInfoLog(cs,n,nullptr,log.data()); std::cerr<<"Compute compile:\n"<<log.data(); exit(EXIT_FAILURE); }
+            glGetShaderInfoLog(cs,n,nullptr,log.data()); failStartup(std::string("Compute shader compile failed\n\n") + log.data()); }
         GLuint p = glCreateProgram();
         glAttachShader(p,cs); glLinkProgram(p);
         glGetProgramiv(p, GL_LINK_STATUS, &ok);
         if(!ok){ GLint n; glGetProgramiv(p, GL_INFO_LOG_LENGTH,&n); std::vector<char> log(n);
-            glGetProgramInfoLog(p,n,nullptr,log.data()); std::cerr<<"Compute link:\n"<<log.data(); exit(EXIT_FAILURE); }
+            glGetProgramInfoLog(p,n,nullptr,log.data()); failStartup(std::string("Compute shader link failed\n\n") + log.data()); }
         glDeleteShader(cs);
         return p;
     }
 
     // ---- Dispatch compute pass ----
-    void dispatchCompute(const Camera& cam) {
-        int cw = cam.moving ? COMPUTE_WIDTH  : 200;
-        int ch = cam.moving ? COMPUTE_HEIGHT : 150;
+        void dispatchCompute(const Camera& cam) {
+        int cw = cam.moving ? 160 : 240;
+        int ch = cam.moving ? 120 : 180;
 
         glBindTexture(GL_TEXTURE_2D, texture);
         if (cw != lastComputeW || ch != lastComputeH) {
@@ -561,6 +630,8 @@ int main() {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     while (!glfwWindowShouldClose(engine.window)) {
+        glfwGetFramebufferSize(engine.window, &engine.WIDTH, &engine.HEIGHT);
+        glViewport(0, 0, engine.WIDTH, engine.HEIGHT);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         double now = glfwGetTime();
@@ -603,18 +674,14 @@ int main() {
 
         // ---- Grid (visual) ----
         engine.generateGrid(objects);
-		engine.dispatchCompute(camera);
-		engine.drawFullScreenQuad();
-		
-        mat4 view = lookAt(camera.position(), camera.target, vec3(0,1,0));
-        mat4 proj = perspective(radians(60.0f), float(engine.WIDTH)/float(engine.HEIGHT), 1e9f, 1e14f);
-        mat4 vp = proj * view;
-		engine.drawGrid(vp);
 
-        // ---- Compute raytracer ----
-        glViewport(0,0,engine.WIDTH,engine.HEIGHT);
+        mat4 view = lookAt(camera.position(), camera.target, vec3(0,1,0));
+        mat4 proj = perspective(radians(60.0f), float(engine.WIDTH)/float((std::max)(1, engine.HEIGHT)), 1e9f, 1e14f);
+        mat4 vp = proj * view;
+
         engine.dispatchCompute(camera);
         engine.drawFullScreenQuad();
+        engine.drawGrid(vp);
 
         glfwSwapBuffers(engine.window);
         glfwPollEvents();
@@ -629,3 +696,10 @@ int main() {
     glfwTerminate();
     return 0;
 }
+
+
+
+
+
+
+
