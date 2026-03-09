@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Black Hole Web Demo</title>
+    <meta
+      name="description"
+      content="A shareable WebGPU black hole simulation inspired by the native Blackhole desktop demo."
+    />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene" aria-label="Black hole simulation"></canvas>
+      <div class="hud">
+        <div class="panel panel-title">
+          <p class="eyebrow">WebGPU demo</p>
+          <h1>Black Hole</h1>
+          <p class="lede">
+            Relativistic lensing, accretion glow, orbit camera, grid overlay,
+            gravity toggle, and reactive procedural audio.
+          </p>
+        </div>
+
+        <div class="panel panel-controls">
+          <p class="eyebrow">Controls</p>
+          <ul>
+            <li><span>Drag</span> orbit camera</li>
+            <li><span>Wheel</span> zoom</li>
+            <li><span>G</span> toggle gravity</li>
+            <li><span>Click</span> unlock audio</li>
+          </ul>
+        </div>
+
+        <div class="panel panel-actions">
+          <button id="copy-link" type="button">Copy link</button>
+          <p id="status" class="status">Checking WebGPU support...</p>
+        </div>
+      </div>
+
+      <div id="unsupported" class="unsupported hidden" role="alert">
+        <div class="unsupported-card">
+          <p class="eyebrow">Unsupported browser</p>
+          <h2>WebGPU is required</h2>
+          <p>
+            This demo targets current desktop Chrome or Edge with WebGPU
+            enabled. Try opening it there for the full black hole experience.
+          </p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

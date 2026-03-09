@@ -1,0 +1,201 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", "SF Pro Display", sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(38, 67, 112, 0.32), transparent 45%),
+    linear-gradient(180deg, #04070d 0%, #020409 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  overflow: hidden;
+  color: #f6f8fb;
+}
+
+#scene {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+}
+
+.hud {
+  position: fixed;
+  inset: 0;
+  padding: 24px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.panel {
+  width: min(420px, calc(100vw - 48px));
+  padding: 16px 18px;
+  background: rgba(6, 10, 18, 0.62);
+  border: 1px solid rgba(132, 175, 255, 0.16);
+  border-radius: 18px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease;
+}
+
+.panel + .panel {
+  margin-top: 14px;
+}
+
+.panel-title {
+  margin-top: 0;
+}
+
+.panel-actions {
+  pointer-events: auto;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #8eb8ff;
+}
+
+h1,
+h2,
+.lede,
+.status,
+ul {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 0.95;
+  margin-bottom: 10px;
+}
+
+h2 {
+  margin-bottom: 10px;
+}
+
+.lede {
+  color: rgba(232, 240, 255, 0.84);
+  line-height: 1.55;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+li {
+  display: flex;
+  gap: 10px;
+  color: rgba(230, 238, 250, 0.8);
+}
+
+li span {
+  min-width: 52px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+button {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(144, 189, 255, 0.25);
+  background: linear-gradient(135deg, rgba(58, 102, 188, 0.85), rgba(31, 54, 98, 0.95));
+  color: white;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 140ms ease, opacity 160ms ease, border-color 160ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(172, 206, 255, 0.4);
+}
+
+.status {
+  margin-top: 10px;
+  color: rgba(224, 235, 255, 0.78);
+  transition: opacity 140ms ease, transform 180ms ease;
+}
+
+#app.is-interacting .panel {
+  background: rgba(6, 10, 18, 0.48);
+  border-color: rgba(132, 175, 255, 0.08);
+}
+
+#app.is-interacting .panel-title {
+  opacity: 0.74;
+  transform: translateY(-2px);
+}
+
+#app.is-interacting .panel-controls {
+  opacity: 0.2;
+  transform: translateY(10px) scale(0.985);
+}
+
+#app.is-interacting .panel-actions {
+  opacity: 0.28;
+  transform: translateY(8px);
+}
+
+#app.is-interacting .status {
+  opacity: 0.18;
+  transform: translateY(6px);
+}
+
+#app.is-interacting button {
+  opacity: 0.72;
+}
+
+.unsupported {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 5, 10, 0.9);
+  padding: 24px;
+}
+
+.unsupported-card {
+  width: min(520px, 100%);
+  padding: 28px;
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(13, 20, 34, 0.95), rgba(5, 9, 16, 0.98));
+  border: 1px solid rgba(116, 163, 255, 0.18);
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .hud {
+    padding: 16px;
+  }
+
+  .panel {
+    width: min(100%, calc(100vw - 32px));
+  }
+}

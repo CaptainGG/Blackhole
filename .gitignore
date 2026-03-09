@@ -1,0 +1,11 @@
+build/
+build-vs/
+vcpkg/
+vcpkg_installed/
+web/node_modules/
+web/dist/
+.DS_Store
+Thumbs.db
+*.user
+*.suo
+*.VC.db
